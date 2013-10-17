@@ -6,20 +6,20 @@ gozmq-mock provides a simple ZMQ server that responds to all requests with a spe
 
 # Dependencies
 
-[alecthomas's gozmq](http://github.com/alecthomas/gozmq): `go get github.com/alecthomas/gozmq`
-[tchap's gozmq-poller](https://github.com/tchap/gozmq-poller): `go get github.com/tchap/gozmq-poller`
+* [alecthomas's gozmq](http://github.com/alecthomas/gozmq): `go get github.com/alecthomas/gozmq`
+* [tchap's gozmq-poller](https://github.com/tchap/gozmq-poller): `go get github.com/tchap/gozmq-poller`
 
 # Example usage
 
-<code>
+```bash
 ./gozmq-mock -socket="ipc:///tmp/mock.sock" -response='{ "foo": "1" }' -verbose
-</code>
+```
 
 Any zmq REQ packets sent to the mock will receive the specified response.
 
 ## Example REQ client
 
-<code>
+```go
 package main
 
 import "fmt"
@@ -36,4 +36,4 @@ func main() {
 	// This will print whatever the mock returned (e.g. '{ "foo": "1" }')
 	fmt.Println("response:", string(response))
 }
-</code>
+```
