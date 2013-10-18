@@ -2,7 +2,7 @@
 
 *This is a work in progress, consider it "alpha" quality code. This is an implementation of a basic REP listener that expects REQ inputs. Future versions will support DEALER/ROUTER.*
 
-gozmq-mock provides a simple ZMQ server that responds to all requests with a specified string pattern after waiting a configurable amount of time. This can be used to ensure that your client code is properly parsing the server response and handling timeouts appropriately.
+gozmq-mock provides a simple ZMQ server that replies to all requests with a specified string pattern after waiting a configurable amount of time. This can be used to ensure that your client code is properly parsing the server reply and handling timeouts appropriately.
 
 # Dependencies
 
@@ -12,10 +12,10 @@ gozmq-mock provides a simple ZMQ server that responds to all requests with a spe
 # Example usage
 
 <code>
-./gozmq-mock -socket="ipc:///tmp/mock.sock" -response='{ "foo": "1" }' -verbose
+./gozmq-mock -socket="ipc:///tmp/mock.sock" -reply='{ "foo": "1" }' -verbose -n=123
 </code>
 
-Any zmq REQ packets sent to the mock will receive the specified response.
+Any zmq REQ packets sent to the mock will receive the specified reply. After the 123rd reply is sent the server will shut down.
 
 ## Example REQ client
 
@@ -31,9 +31,9 @@ func main() {
 	zmqSocket.Connect("ipc:///tmp/mock.sock")
 
 	zmqSocket.Send([]byte("foo"), 0)
-	response, _ := zmqSocket.Recv(0)
+	reply, _ := zmqSocket.Recv(0)
 
 	// This will print whatever the mock returned (e.g. '{ "foo": "1" }')
-	fmt.Println("response:", string(response))
+	fmt.Println("reply:", string(reply))
 }
 </code>
