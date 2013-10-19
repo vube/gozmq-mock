@@ -1,5 +1,6 @@
-// A gozmq server that responds to requests in a specified manner,
-// allowing you to mock ZMQ servers.
+// A gozmq server that either responds to requests (REP) with static
+// data or makes repeated requests (REQ) with static data to a
+// specified ZMQ server.
 
 package main
 
@@ -15,18 +16,20 @@ import (
 
 func main() {
 	var (
-		socketUrl string
-		replyText string
-		verbose   bool
-		delay     int
-		nreplies  int
+		socketUrl  string
+		socketType string
+		replyText  string
+		verbose    bool
+		delay      int
+		nreplies   int
 	)
 
 	flag.StringVar(&socketUrl, "socket", "", "the mock server socket: ipc:///tmp/foo.sock, tcp://1.2.3.4:9999, etc")
+	flag.StringVar(&socketType, "type", "REP", "the type of socket (currently supported: REP (default), REQ)")
 	flag.StringVar(&replyText, "reply", "", "the text to return whenever any request is made")
-	flag.BoolVar(&verbose, "verbose", false, "set true to log all input")
-	flag.IntVar(&delay, "delay", 0, "the number of milliseconds to sleep before replying to requests")
-	flag.IntVar(&nreplies, "n", 0, "the number of replies to return (default: 0 = unlimited)")
+	flag.BoolVar(&verbose, "verbose", false, "set true to log all input (REP) or output (REQ)")
+	flag.IntVar(&delay, "delay", 0, "the number of milliseconds to sleep between messages")
+	flag.IntVar(&nreplies, "n", 0, "the number of replies or requests to send (default: 0 = unlimited)")
 	flag.Parse()
 
 	if socketUrl == "" {
@@ -49,6 +52,7 @@ func main() {
 	// a signal to end it.
 
 	done := make(chan bool, 1)
+	finishedClosing := make(chan bool, 1)
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
@@ -60,19 +64,102 @@ func main() {
 		os.Exit(0)
 	}()
 
-	err := startServerRep(socketUrl, replyText, verbose, delay, done, nreplies)
+	var err error
+	switch socketType {
+	case "REP":
+		err = startServerRep(socketUrl, replyText, verbose, delay, done, finishedClosing, nreplies)
+	case "REQ":
+		err = startServerReq(socketUrl, replyText, verbose, delay, done, finishedClosing, nreplies)
+	default:
+		log.Println("main", "only supports REP and REQ")
+		flag.PrintDefaults()
+		os.Exit(1)
+	}
+
 	if err != nil {
 		log.Fatalln("startServer", err.Error())
 		os.Exit(1)
 	}
-	<-done
+	<-finishedClosing
 }
 
 type zmqMessage struct {
 	Payload []byte
 }
 
-func startServerRep(socketUrl string, replyText string, verbose bool, delay int, done chan bool, nreplies int) (err error) {
+// Start a simple "request" sender. This just sends the same request
+// payload repeatedly to a server at the specified socketUrl until
+// a value is passed to the done channel or the number of requests
+// exceeds nrequests. (nrequests = 0 means unlimited requests).
+func startServerReq(socketUrl string, payload string, verbose bool, delay int, done chan bool, finishedClosing chan bool, nrequests int) (err error) {
+	zmqContext, err := zmq.NewContext()
+	if err != nil {
+		return
+	}
+
+	zmqSocket, err := zmqContext.NewSocket(zmq.REQ)
+	if err != nil {
+		return
+	}
+
+	err = zmqSocket.Connect(socketUrl)
+	if err != nil {
+		return
+	}
+
+	go func() {
+		ticker := time.Tick(time.Duration(delay) * time.Millisecond)
+
+		n := 0
+
+		for {
+			select {
+			case <-done:
+				zmqSocket.Close()
+				zmqContext.Close()
+				finishedClosing <- true
+				return
+
+			case <-ticker:
+				err := zmqSocket.Send([]byte(payload), 0)
+				if err != nil {
+					log.Println("zmqSocket.Send", err.Error())
+					done <- true
+					break
+				}
+
+				if verbose {
+					log.Println("> request", string(payload))
+				}
+
+				reply, err := zmqSocket.Recv(0)
+				if err != nil {
+					log.Println("zmqSocket.Recv", err.Error())
+					done <- true
+					break
+				}
+
+				if verbose {
+					log.Println("< reply", string(reply))
+				}
+
+				n++
+				if nrequests > 0 && n >= nrequests {
+					done <- true
+					ticker = nil
+				}
+			}
+		}
+	}()
+
+	return
+}
+
+// Start a simple "reply" server. This responds to every incoming
+// request at the specified socket with the reply payload until
+// a value is passed to the done channel or there have been at least
+// nreplies sent.
+func startServerRep(socketUrl string, replyText string, verbose bool, delay int, done chan bool, finishedClosing chan bool, nreplies int) (err error) {
 	zmqContext, err := zmq.NewContext()
 	if err != nil {
 		return
@@ -100,52 +187,42 @@ func startServerRep(socketUrl string, replyText string, verbose bool, delay int,
 	n := 0
 
 	go func() {
-		input := make(chan zmqMessage, 1)
-		output := make(chan zmqMessage, 1)
 		pollCh := zmqPoller.Poll()
-
-		doneFunc := func() {
-			zmqPoller.Close()
-			zmqSocket.Close()
-			zmqContext.Close()
-			done <- true
-		}
 
 		for {
 			select {
 			case <-done:
-				doneFunc()
-				break
+				zmqPoller.Close()
+				zmqSocket.Close()
+				zmqContext.Close()
+				finishedClosing <- true
+				return
 
 			case <-pollCh:
-				msg, _ := zmqSocket.Recv(0)
-
-				input <- zmqMessage{Payload: msg}
-				// Reset the poller so it can accept more requests
-				pollCh = zmqPoller.Poll()
-
-			case inputMessage := <-input:
-				if verbose {
-					log.Println("input", string(inputMessage.Payload))
+				inputPayload, err := zmqSocket.Recv(0)
+				if err != nil {
+					log.Println("zmqSocket.Recv", err.Error())
+					done <- true
+					break
 				}
 
-				// Read the request from the caller, reply to the request
-				// as expected.
+				if verbose {
+					log.Println("< request", string(inputPayload))
+				}
 
-				output <- zmqMessage{Payload: []byte(replyText)}
-
-			case outputMessage := <-output:
 				time.Sleep(time.Duration(delay) * time.Millisecond)
-				err := zmqSocket.Send(outputMessage.Payload, 0)
-				if err != nil {
-					log.Println("zmqSocket.Send", err.Error())
+				zmqSocket.Send([]byte(replyText), 0)
+
+				if verbose {
+					log.Println("> reply", string(replyText))
 				}
 
 				n++
 				if nreplies > 0 && n >= nreplies {
-					doneFunc()
-					break
+					done <- true
 				}
+
+				pollCh = zmqPoller.Poll()
 			}
 		}
 	}()
