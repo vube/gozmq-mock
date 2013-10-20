@@ -108,8 +108,6 @@ func startServerReq(socketUrl string, payload string, verbose bool, delay int, d
 	}
 
 	go func() {
-		ticker := time.Tick(time.Duration(delay) * time.Millisecond)
-
 		n := 0
 
 		for {
@@ -120,7 +118,7 @@ func startServerReq(socketUrl string, payload string, verbose bool, delay int, d
 				finishedClosing <- true
 				return
 
-			case <-ticker:
+			default:
 				err := zmqSocket.Send([]byte(payload), 0)
 				if err != nil {
 					log.Println("zmqSocket.Send", err.Error())
@@ -130,6 +128,10 @@ func startServerReq(socketUrl string, payload string, verbose bool, delay int, d
 
 				if verbose {
 					log.Println("> request", string(payload))
+				}
+
+				if delay > 0 {
+					time.Sleep(time.Duration(delay) * time.Millisecond)
 				}
 
 				reply, err := zmqSocket.Recv(0)
@@ -146,7 +148,6 @@ func startServerReq(socketUrl string, payload string, verbose bool, delay int, d
 				n++
 				if nrequests > 0 && n >= nrequests {
 					done <- true
-					ticker = nil
 				}
 			}
 		}
@@ -210,7 +211,10 @@ func startServerRep(socketUrl string, replyText string, verbose bool, delay int,
 					log.Println("< request", string(inputPayload))
 				}
 
-				time.Sleep(time.Duration(delay) * time.Millisecond)
+				if delay > 0 {
+					time.Sleep(time.Duration(delay) * time.Millisecond)
+				}
+
 				zmqSocket.Send([]byte(replyText), 0)
 
 				if verbose {
